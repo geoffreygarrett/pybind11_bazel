@@ -140,6 +140,8 @@ def pybind_library_test(
 def _pybind_stubgen_impl(ctx):
     output_dir_name = ctx.attr.module_name + ctx.attr.root_module_suffix
     output_dir = ctx.actions.declare_directory(output_dir_name)
+    runfiles = ctx.runfiles(files = ctx.files._stubgen_runfiles)
+    runfiles = runfiles.merge(ctx.runfiles(files = ctx.files.src))
 
     # Tool exists check.
     if ctx.executable.tool.path:
@@ -192,7 +194,7 @@ def _pybind_stubgen_impl(ctx):
     # Generate stubs.
     ctx.actions.run_shell(
         outputs = [output_dir],
-        inputs = ctx.files.src + [ctx.executable.tool],
+        inputs = ctx.files.src + ctx.files.tool,
         command = " ".join(args),
         env = {"PYTHONPATH": pythonpath},
     )
@@ -206,6 +208,7 @@ def _pybind_stubgen_impl(ctx):
     # Returning the directory as the output.
     return DefaultInfo(
         files = depset([output_dir]),
+        runfiles = runfiles,
     )
 
 pybind_stubgen = rule(
@@ -213,13 +216,14 @@ pybind_stubgen = rule(
     attrs = {
         "src": attr.label(mandatory = True, allow_single_file = True),
         "module_name": attr.string(mandatory = True),
-        "tool": attr.label(executable = True, cfg = "host"),
+        "tool": attr.label(executable = True, cfg = "host", allow_files = True),
         "root_module_suffix": attr.string(default = "-stubs"),
         "no_setup_py": attr.bool(),
         "ignore_invalid": attr.string_list(),
         "skip_signature_downgrade": attr.bool(),
         "bare_numpy_ndarray": attr.bool(),
         "log_level": attr.string(),
+        "_stubgen_runfiles": attr.label(),
     },
 )
 
