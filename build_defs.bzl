@@ -28,7 +28,7 @@ PYBIND_DEPS = [
 # Builds a Python extension module using pybind11.
 # This can be directly used in python with the import statement.
 # This adds rules for a .so binary file.
-def pybind_extension(
+def _pybind_extension_impl(
         name,
         copts = [],
         features = [],
@@ -40,7 +40,7 @@ def pybind_extension(
     tags = tags + ["req_dep=%s" % dep for dep in PYBIND_DEPS]
 
     native.cc_binary(
-        name = name + ".so",
+        name = name,
         copts = copts + PYBIND_COPTS + select({
             "@pybind11//:msvc_compiler": [],
             "//conditions:default": [
@@ -57,6 +57,41 @@ def pybind_extension(
         tags = tags,
         deps = deps + PYBIND_DEPS,
         **kwargs
+    )
+
+def pybind_extension(
+        name,
+        copts = [],
+        features = [],
+        linkopts = [],
+        tags = [],
+        deps = [],
+        **kwargs):
+    _pybind_extension_impl(
+        name = name + ".so",
+        copts = copts,
+        features = features,
+        linkopts = linkopts,
+        tags = tags,
+        deps = deps,
+        **kwargs
+    )
+
+    # rename the <name>.so file to <name>.pyd on windows
+    native.genrule(
+        name = "gen_" + name + ".pyd",
+        srcs = [":" + name + ".so"],
+        outs = [name + ".pyd"],
+        cmd = "cp $< $@",
+    )
+
+    # alias the <name> target to the correct file extension
+    native.alias(
+        name = name,
+        actual = select({
+            "@platforms//os:windows": ":" + "gen_" + name + ".pyd",
+            "//conditions:default": ":" + name + ".so",
+        }),
     )
 
 # Builds a pybind11 compatible library. This can be linked to a pybind_extension.
@@ -101,6 +136,92 @@ def pybind_library_test(
         ],
         **kwargs
     )
+
+def _pybind_stubgen_impl(ctx):
+    output_dir_name = ctx.attr.module_name + ctx.attr.root_module_suffix
+    output_dir = ctx.actions.declare_directory(output_dir_name)
+
+    # Tool exists check.
+    if ctx.executable.tool.path:
+        print("Tool exists at path: {}".format(ctx.executable.tool.path))
+    else:
+        fail("Tool not found at path: {}".format(ctx.executable.tool.path))
+
+    args = [
+        ctx.executable.tool.path,
+        ctx.attr.module_name,
+        "-o",
+        output_dir.path,
+    ]
+
+    # Print the command to be executed for debugging.
+    #    print("Command to be executed: " + " ".join(args))
+
+    #    print("root_module_suffix: " + ctx.attr.root_module_suffix)
+    #    if ctx.attr.root_module_suffix:
+    #        args.extend(["--root-module-suffix", "\"{}\""
+    #            .format(ctx.attr.root_module_suffix)])
+
+    if ctx.attr.no_setup_py:
+        args.append("--no-setup-py")
+
+    if ctx.attr.ignore_invalid:
+        args.extend(["--ignore-invalid", " ".join(ctx.attr.ignore_invalid)])
+
+    if ctx.attr.skip_signature_downgrade:
+        args.append("--skip-signature-downgrade")
+
+    if ctx.attr.bare_numpy_ndarray:
+        args.append("--bare-numpy-ndarray")
+
+    if ctx.attr.log_level:
+        args.extend(["--log-level", ctx.attr.log_level])
+
+    args.extend([
+        "&&",
+        "cp -R",
+        "{}/{}-stubs/*".format(output_dir.path, ctx.attr.module_name),
+        output_dir.path,
+        "&&",
+        "rm -rf",
+        "{}/{}-stubs".format(output_dir.path, ctx.attr.module_name),
+    ])
+
+    pythonpath = ctx.files.src[0].dirname
+
+    # Generate stubs.
+    ctx.actions.run_shell(
+        outputs = [output_dir],
+        inputs = ctx.files.src + [ctx.executable.tool],
+        command = " ".join(args),
+        env = {"PYTHONPATH": pythonpath},
+    )
+
+    # After running the stub generator, create the manifest file.
+    #    ctx.actions.write(
+    #        output = manifest_file,
+    #        content = "\n".join([f.path for f in output_dir.files]),
+    #    )
+
+    # Returning the directory as the output.
+    return DefaultInfo(
+        files = depset([output_dir]),
+    )
+
+pybind_stubgen = rule(
+    implementation = _pybind_stubgen_impl,
+    attrs = {
+        "src": attr.label(mandatory = True, allow_single_file = True),
+        "module_name": attr.string(mandatory = True),
+        "tool": attr.label(executable = True, cfg = "host"),
+        "root_module_suffix": attr.string(default = "-stubs"),
+        "no_setup_py": attr.bool(),
+        "ignore_invalid": attr.string_list(),
+        "skip_signature_downgrade": attr.bool(),
+        "bare_numpy_ndarray": attr.bool(),
+        "log_level": attr.string(),
+    },
+)
 
 # Register extension with build_cleaner.
 register_extension_info(
